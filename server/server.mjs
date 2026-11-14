@@ -29,6 +29,7 @@ const MODELS = {
 state.models = { planner: GEMINI, coder: GEMINI, silent: env.MINIMAX_MODEL || 'MiniMax-M3.1-Flash',
   voice: env.MINIMAX_API_KEY ? 'MiniMax speech-2.8-turbo' : 'ElevenLabs flash v2.5', stt: 'Deepgram Nova-3 (Pipecat)' };
 state.options = ['gemini-4-hydrogen', 'MiniMax-M3.1-Flash', 'MiniMax-M3'];
+state.voiceOptions = ['MiniMax speech-2.8-turbo', 'ElevenLabs flash v2.5'];
 state.calls = {}; state.last = {};
 const count = (model, role, ms, ok) => { const c = (state.calls[model] ||= { n: 0, ms: 0, fail: 0 }); c.n++; c.ms += ms; if (!ok) c.fail++; state.last[role] = { model, ms: Math.round(ms), ok }; push(); };
 
@@ -171,7 +172,8 @@ http.createServer(async (req, res) => {
   }
   if (u.pathname === '/state') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ pending: !!state.pending, kind: state.pending?.kind, risky: state.pending && state.agents.find(a => a.name === state.pending.agent)?.blast > 60, working: state.agents.some(a => a.status === 'working'), last: state.agents.map(a => a.status) })); }
   if (u.pathname === '/speak') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ text: state.pending?.text || '' })); }
-  if (u.pathname === '/model' && req.method === 'POST') { const { role, model } = await body(req); if (['planner', 'coder', 'silent'].includes(role) && state.options.includes(model)) { state.models[role] = model; push(); } return res.end('{}'); }
+  if (u.pathname === '/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ models: state.models, options: state.options, voiceOptions: state.voiceOptions, calls: state.calls, last: state.last, heard: state.heard || null, task: state.task, pending: state.pending?.text || null, agents: state.agents.map(a => ({ name: a.name, status: a.status, blast: a.blast })) })); }
+  if (u.pathname === '/model' && req.method === 'POST') { const { role, model } = await body(req); if ((['planner', 'coder', 'silent'].includes(role) && state.options.includes(model)) || (role === 'voice' && state.voiceOptions.includes(model))) { state.models[role] = model; push(); } return res.end('{}'); }
   if (u.pathname === '/task' && req.method === 'POST') {
     const { text } = await body(req); if (!text) return res.end('{}');
     Object.assign(state, { task: text, agents: [], pending: null, queue: [], ledger: [], budget: 50 });
@@ -195,7 +197,7 @@ http.createServer(async (req, res) => {
   }
   if (u.pathname === '/tts') {
     const t = u.searchParams.get('text') || '';
-    const eleven = u.searchParams.get('engine') === 'eleven' || !env.MINIMAX_API_KEY;
+    const eleven = state.models.voice.startsWith('Eleven') || !env.MINIMAX_API_KEY;
     const tt0 = Date.now();
     if (!eleven) {
       try {
