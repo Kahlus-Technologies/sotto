@@ -1,0 +1,41 @@
+<!doctype html><meta charset=utf-8><title>Sotto</title>
+<style>
+:root{--bg:#000;--fg:#e8fff1;--dim:#5b7a68;--ok:#35f08a;--warn:#ffcf3a;--bad:#ff4d5e}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:20px ui-monospace,Menlo,monospace;height:100vh;display:grid;grid-template-columns:2fr 1fr;gap:24px;padding:28px}
+h1{margin:0 0 4px;font-size:22px;letter-spacing:.2em;color:var(--ok)}.task{color:var(--dim);margin-bottom:18px;min-height:1.3em}
+.agent{border:1px solid #1d3a2b;border-radius:10px;padding:14px 18px;margin-bottom:14px}
+.agent.waiting{border-color:var(--warn)}.agent.merged{border-color:var(--ok)}.agent.stopped{border-color:var(--bad);opacity:.6}
+.row{display:flex;justify-content:space-between}.name{font-weight:700}.bar{height:8px;background:#0e1f17;border-radius:4px;margin:10px 0;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--ok);transition:width .5s}.blast i{background:linear-gradient(90deg,var(--ok),var(--warn),var(--bad))}
+.small{color:var(--dim);font-size:15px}
+.ask{border:2px solid var(--warn);border-radius:12px;padding:18px;margin-bottom:18px;background:#1a1600;font-size:22px}
+.ask b{display:block;margin-top:10px;font-size:16px;color:var(--warn)}
+.led{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--ok);margin-right:8px}
+input{width:100%;background:#06120b;border:1px solid #1d3a2b;color:var(--fg);padding:12px;font:inherit;border-radius:8px}
+button{background:#06120b;color:var(--fg);border:1px solid #1d3a2b;padding:8px 14px;font:inherit;border-radius:8px;cursor:pointer;margin:6px 6px 0 0}
+</style>
+<div><h1>SOTTO</h1><div class=task id=task>Hold SPACE and whisper a task. Or type it.</div><div id=agents></div></div>
+<div><div id=ask></div><div class=small>BUDGET</div><div id=budget style="font-size:40px;color:var(--ok)">$50</div>
+<div class=small style="margin:14px 0 4px">STRIPE TEST LEDGER</div><div id=ledger class=small></div>
+<div style="margin-top:20px"><input id=in placeholder="type a task, press enter"><button onclick="g('approve')">nod</button><button onclick="g('reject')">shake</button><button id=mute>voice: on</button></div></div>
+<script>
+const $=id=>document.getElementById(id);let voice=true,last='';
+const g=t=>fetch('/gesture',{method:'POST',body:JSON.stringify({type:t,source:'screen'})});
+$('mute').onclick=()=>{voice=!voice;$('mute').textContent='voice: '+(voice?'on':'off')};
+$('in').onkeydown=e=>{if(e.key==='Enter'&&e.target.value){task(e.target.value);e.target.value=''}};
+const task=text=>fetch('/task',{method:'POST',body:JSON.stringify({text})});
+// push-to-talk with browser speech recognition
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;let rec,heard='';
+if(SR){addEventListener('keydown',e=>{if(e.code==='Space'&&document.activeElement.tagName!=='INPUT'&&!rec){e.preventDefault();heard='';rec=new SR();rec.interimResults=true;rec.onresult=ev=>{heard=[...ev.results].map(r=>r[0].transcript).join('');$('task').textContent='🎙 '+heard};rec.onend=()=>{rec=null;if(heard)task(heard)};rec.start()}});
+addEventListener('keyup',e=>{if(e.code==='Space'&&rec)rec.stop()})}
+const es=new EventSource('/events');
+es.onmessage=e=>{const s=JSON.parse(e.data);if(s.task)$('task').textContent='▸ '+s.task;
+$('budget').textContent='$'+s.budget;
+$('agents').innerHTML=s.agents.map(a=>`<div class="agent ${a.status}"><div class=row><span class=name>${a.name}</span><span class=small>${a.status}${a.pr?' · '+a.pr:''}${a.decidedBy?' · via '+a.decidedBy:''}</span></div>
+<div class=small>${a.goal}</div><div class=bar><i style="width:${a.progress}%"></i></div>
+<div class=small>blast radius ${a.blast}% · ${a.files.join(', ')}</div><div class="bar blast"><i style="width:${a.blast}%"></i></div></div>`).join('');
+$('ask').innerHTML=s.pending?`<div class=ask>${s.pending.text}<b>NOD / DOUBLE-TAP = YES · SHAKE / FLICK = NO</b></div>`:'';
+$('ledger').innerHTML=s.ledger.map(l=>`<div>$${l.usd} ${l.item}<br>${l.stripe} ${l.status||''}</div>`).join('');
+if(s.pending&&s.pending.text!==last&&voice){last=s.pending.text;new Audio('/tts?text='+encodeURIComponent(s.pending.text)).play().catch(()=>{})}
+if(!s.pending)last=''};
+</script>

@@ -1,0 +1,1 @@
+{"name":"sotto","private":true,"type":"module","scripts":{"start":"node server/server.mjs"}}
