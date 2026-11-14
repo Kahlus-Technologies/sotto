@@ -23,7 +23,7 @@ The band light mirrors the swarm: blue working, amber blinking when it needs you
 | Coder agents (write patches) | Gemini 4 hydrogen | MiniMax M3.1 Flash, M3 |
 | Silent words to task | MiniMax M3.1 Flash | Gemini, MiniMax M3 |
 | Voice out | MiniMax speech-2.8-turbo | ElevenLabs flash v2.5 (fallback) |
-| Voice in | Deepgram Nova-3 via Pipecat | |
+| Voice in | MiniMax asr-1.0 (hold-to-talk in the Subvox app) | Deepgram Nova-3 (also live via Pipecat `voice/voice.py`) |
 
 The right panel of the page shows the active model per role and a live call count and average latency per model. A failed MiniMax call falls back to Gemini and is counted as a fallback.
 

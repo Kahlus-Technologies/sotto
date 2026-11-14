@@ -27,9 +27,10 @@ const MODELS = {
   'MiniMax-M3': { vendor: 'MiniMax', kind: 'llm' },
 };
 state.models = { planner: GEMINI, coder: GEMINI, silent: env.MINIMAX_MODEL || 'MiniMax-M3.1-Flash',
-  voice: env.MINIMAX_API_KEY ? 'MiniMax speech-2.8-turbo' : 'ElevenLabs flash v2.5', stt: 'Deepgram Nova-3 (Pipecat)' };
+  voice: env.MINIMAX_API_KEY ? 'MiniMax speech-2.8-turbo' : 'ElevenLabs flash v2.5', stt: 'MiniMax asr-1.0' };
 state.options = ['gemini-4-hydrogen', 'MiniMax-M3.1-Flash', 'MiniMax-M3'];
 state.voiceOptions = ['MiniMax speech-2.8-turbo', 'ElevenLabs flash v2.5'];
+state.sttOptions = ['MiniMax asr-1.0', 'Deepgram Nova-3'];
 state.calls = {}; state.last = {};
 const count = (model, role, ms, ok) => { const c = (state.calls[model] ||= { n: 0, ms: 0, fail: 0 }); c.n++; c.ms += ms; if (!ok) c.fail++; state.last[role] = { model, ms: Math.round(ms), ok }; push(); };
 
@@ -172,8 +173,28 @@ http.createServer(async (req, res) => {
   }
   if (u.pathname === '/state') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ pending: !!state.pending, kind: state.pending?.kind, risky: state.pending && state.agents.find(a => a.name === state.pending.agent)?.blast > 60, working: state.agents.some(a => a.status === 'working'), last: state.agents.map(a => a.status) })); }
   if (u.pathname === '/speak') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ text: state.pending?.text || '' })); }
-  if (u.pathname === '/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ models: state.models, options: state.options, voiceOptions: state.voiceOptions, calls: state.calls, last: state.last, heard: state.heard || null, task: state.task, pending: state.pending?.text || null, agents: state.agents.map(a => ({ name: a.name, status: a.status, blast: a.blast })) })); }
-  if (u.pathname === '/model' && req.method === 'POST') { const { role, model } = await body(req); if ((['planner', 'coder', 'silent'].includes(role) && state.options.includes(model)) || (role === 'voice' && state.voiceOptions.includes(model))) { state.models[role] = model; push(); } return res.end('{}'); }
+  if (u.pathname === '/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ models: state.models, options: state.options, voiceOptions: state.voiceOptions, sttOptions: state.sttOptions, calls: state.calls, last: state.last, heard: state.heard || null, task: state.task, pending: state.pending?.text || null, agents: state.agents.map(a => ({ name: a.name, status: a.status, blast: a.blast })) })); }
+  // Hold-to-talk from the Subvox app: WAV in, MiniMax ASR (or Deepgram) -> text -> swarm task.
+  if (u.pathname === '/listen' && req.method === 'POST') {
+    const chunks = []; for await (const c of req) chunks.push(c); const wav = Buffer.concat(chunks);
+    const t0 = Date.now(); let text = '', model = state.models.stt;
+    try {
+      if (model.startsWith('MiniMax')) {
+        const fd = new FormData(); fd.append('model', 'asr-1.0'); fd.append('file', new Blob([wav], { type: 'audio/wav' }), 'a.wav');
+        const r = await fetch('https://api.minimax.io/v1/speech_to_text', { method: 'POST', headers: { authorization: 'Bearer ' + env.MINIMAX_API_KEY }, body: fd });
+        text = ((await r.json()).text || '').trim();
+      } else {
+        const r = await fetch('https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true', { method: 'POST', headers: { authorization: 'Token ' + env.DEEPGRAM_API_KEY, 'content-type': 'audio/wav' }, body: wav });
+        text = (await r.json()).results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() || '';
+      }
+      count(model, 'stt', Date.now() - t0, !!text);
+    } catch (e) { count(model, 'stt', Date.now() - t0, false); }
+    const task = text.replace(/^\W*(hey\s+)?(sotto|soto|so\s+to|sato)\b[\s,:.-]*/i, '').trim();
+    state.heard = { raw: text, text: task || text, via: model }; push();
+    if (task.length > 3) fetch(`http://127.0.0.1:${PORT}/task`, { method: 'POST', body: JSON.stringify({ text: task }) });
+    return res.end(JSON.stringify({ text, task }));
+  }
+  if (u.pathname === '/model' && req.method === 'POST') { const { role, model } = await body(req); if ((role === 'stt' && state.sttOptions.includes(model)) || (['planner', 'coder', 'silent'].includes(role) && state.options.includes(model)) || (role === 'voice' && state.voiceOptions.includes(model))) { state.models[role] = model; push(); } return res.end('{}'); }
   if (u.pathname === '/task' && req.method === 'POST') {
     const { text } = await body(req); if (!text) return res.end('{}');
     Object.assign(state, { task: text, agents: [], pending: null, queue: [], ledger: [], budget: 50 });
