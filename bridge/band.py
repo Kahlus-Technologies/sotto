@@ -28,6 +28,18 @@ def on_motion(m):
     if abs(mag - 1.0) > 1.6 and time.time() - last_flick > 1.5:   # hard shake of the wrist
         last_flick = time.time(); print("flick", round(mag, 2)); band.set_led("#ff2030"); send("reject")
 
+import threading
+def led_loop():  # band light mirrors the swarm: blue=working, amber=wants a decision (red if risky), green=all merged
+    prev = None
+    while True:
+        try:
+            st = json.load(urllib.request.urlopen("http://127.0.0.1:8787/state", timeout=2))
+            cur = ("#ff2030" if st["risky"] else "#ffb000") if st["pending"] else "#2060ff" if st["working"] else "#00ff66"
+            if cur != prev and not band.taken_streams.get("audio"):
+                band.set_led(cur, pattern="blink" if st["pending"] else "solid", period=400); prev = cur
+        except Exception: pass
+        time.sleep(0.7)
+threading.Thread(target=led_loop, daemon=True).start()
 band.on("tap", on_tap); band.on("double-tap", on_tap); band.on("motion", on_motion)
 band.configure(motion=50, events=True)
 print("band", N, "ready"); band.wait(86400)

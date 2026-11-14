@@ -12,6 +12,7 @@ for (const l of (fs.existsSync(env.HOME + '/.vexohacks.env') ? fs.readFileSync(e
 }
 const PORT = +env.PORT || 8787;
 const GEMINI = env.GEMINI_MODEL || 'gemini-4-hydrogen';
+const THINK = env.GEMINI_THINKING || 'low';
 const clients = new Set();
 const state = { task: '', agents: [], pending: null, queue: [], ledger: [], budget: 50 };
 
@@ -21,25 +22,74 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function gemini(prompt) {
   const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI}:generateContent?key=${env.GEMINI_API_KEY}`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json' } }),
-    signal: AbortSignal.timeout(25000) });
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json', thinkingConfig: { thinkingLevel: THINK } } }),
+    signal: AbortSignal.timeout(60000) });
   const j = await r.json();
   return JSON.parse(j.candidates[0].content.parts[0].text);
 }
 
-const FALLBACK = t => [
-  { name: 'Fixer', goal: 'Patch the bug: ' + t, files: ['auth/login.ts', 'auth/session.ts'], blast: 25, spend: null },
-  { name: 'Scout', goal: 'Buy an OCR API key to parse receipts', files: ['ocr/client.ts'], blast: 10, spend: { item: 'OCR API credits', usd: 4 } },
-  { name: 'Refactor', goal: 'Rewrite the database layer', files: ['db/*.ts', 'migrations/*'], blast: 88, spend: null },
-];
+
+import { execFileSync } from 'node:child_process';
+const TEMPLATE = path.join(here, '../demo-target');
+const TARGET = '/tmp/sotto-target';
+const WT = '/tmp/sotto-wt';
+const sh = (cwd, ...a) => { try { return execFileSync(a[0], a.slice(1), { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); } catch (e) { return (e.stdout || '') + (e.stderr || '') + '\nEXIT_FAIL'; } };
+const srcFiles = dir => fs.readdirSync(path.join(dir, 'src')).map(f => 'src/' + f).concat(fs.readdirSync(path.join(dir, 'test')).map(f => 'test/' + f));
+const readAll = dir => Object.fromEntries(srcFiles(dir).map(f => [f, fs.readFileSync(path.join(dir, f), 'utf8')]));
 
 async function plan(task) {
+  const code = readAll(TARGET);
   try {
-    const out = await gemini(`You split a developer task into 3 parallel coding agents. Task: "${task}".
-Return JSON array of 3 objects: {name (one word), goal (short), files (2-3 plausible paths), blast (0-100 estimated blast radius, how much code could break), spend (null or {item, usd integer 1-9} if the agent must buy an API or service)}. At least one agent has spend, at least one has blast over 75.`);
-    if (Array.isArray(out) && out.length) return out.slice(0, 4);
-  } catch (e) { console.log('gemini failed, fallback:', e.message); }
-  return FALLBACK(task);
+    const out = await gemini(`You lead a swarm of 3 coding agents working on this small JS repo (ES modules). Task from the owner: "${task}".
+Repo files:\n${Object.entries(code).map(([f, c]) => `--- ${f}\n${c}`).join('\n')}
+Return a JSON array of exactly 3 agents: {name (one word), goal (one sentence), spend (null, or {item, usd (integer 1-9)} if the agent must buy a paid API/service before it can do its job)}.
+Agent 1 fixes the actual bug. Agent 2 does the part of the task that needs a paid service (spend not null). Agent 3 does an ambitious but risky refactor of shared code (e.g. rewrite crypto/db layer) that touches many files.`);
+    if (Array.isArray(out) && out.length) return out.slice(0, 3);
+  } catch (e) { console.log('plan failed, fallback:', e.message); }
+  return [{ name: 'Fixer', goal: 'Fix the login bug', spend: null },
+          { name: 'Scout', goal: 'Wire up an OCR API', spend: { item: 'OCR API credits', usd: 4 } },
+          { name: 'Refactor', goal: 'Rewrite the crypto and db layer with a salted hash', spend: null }];
+}
+
+function depsOf(dir) { // file -> files that import it
+  const g = {};
+  for (const [f, c] of Object.entries(readAll(dir))) for (const m of c.matchAll(/from '\.\/([\w.-]+)'|from '\.\.\/src\/([\w.-]+)'/g)) { const t = 'src/' + (m[1] || m[2]); (g[t] ||= []).push(f); }
+  return g;
+}
+
+function blast(dir, changed, testsPassed) {
+  const g = depsOf(dir), seen = new Set(changed);
+  const q = [...changed];
+  while (q.length) for (const d of g[q.pop()] || []) if (!seen.has(d)) { seen.add(d); q.push(d); }
+  const reach = seen.size - changed.length;
+  const score = Math.min(100, 14 * changed.length + 10 * reach + (testsPassed ? 0 : 45));
+  return { score, changed, reach };
+}
+
+async function work(a, i) {
+  const dir = `${WT}/${a.name.toLowerCase()}`, branch = `sotto/${a.name.toLowerCase()}-${Date.now() % 100000}`;
+  sh(TARGET, 'git', 'worktree', 'prune'); fs.rmSync(dir, { recursive: true, force: true });
+  sh(TARGET, 'git', 'worktree', 'add', '-q', '-b', branch, dir, 'HEAD'); a.branch = branch; a.dir = dir;
+  a.progress = 15; a.status = 'working'; push();
+  if (a.spend) { a.status = 'waiting'; a.waitFor = 'spend'; ask(a); await new Promise(r => a.resume = r); if (a.status === 'stopped') return; a.status = 'working'; push(); }
+  const code = readAll(dir);
+  let edits = {};
+  try {
+    const out = await gemini(`You are coding agent "${a.name}". Goal: ${a.goal}. ${a.spend ? 'You have bought: ' + a.spend.item + '. Write a minimal working stub integration (no real network calls).' : ''}
+Repo (ES modules, node --test):\n${Object.entries(code).map(([f, c]) => `--- ${f}\n${c}`).join('\n')}
+Return JSON {"summary": one sentence, "files": {"path": "full new file content", ...}} containing only files you change or add under src/ or test/. Keep existing exports working.`);
+    edits = out.files || {}; a.summary = out.summary || '';
+  } catch (e) { a.summary = 'agent failed: ' + e.message; }
+  a.progress = 55; push();
+  for (const [f, c] of Object.entries(edits)) { if (!/^(src|test)\/[\w.-]+\.js$/.test(f)) continue; fs.writeFileSync(path.join(dir, f), c); }
+  const changed = sh(dir, 'git', 'status', '--porcelain').split('\n').filter(Boolean).map(l => l.slice(3).trim());
+  const t = sh(dir, 'node', '--test', ...fs.readdirSync(path.join(dir, 'test')).map(f => 'test/' + f)); a.testsPassed = !/EXIT_FAIL|# fail [1-9]|ℹ fail [1-9]/.test(t) && !/not ok/.test(t);
+  Object.assign(a, { blast: 0, files: changed }); const b = blast(dir, changed, a.testsPassed);
+  a.blast = b.score; a.reach = b.reach; a.files = changed.length ? changed : ['(no change)'];
+  a.diff = sh(dir, 'git', 'diff', '--stat', 'HEAD').split('\n').slice(0, 6).join('\n');
+  a.progress = 100; push();
+  if (changed.length) { sh(dir, 'git', 'add', '-A'); sh(dir, 'git', '-c', 'user.email=s@s', '-c', 'user.name=sotto', 'commit', '-qm', `${a.name}: ${a.goal}`); }
+  a.status = 'waiting'; a.waitFor = 'merge'; ask(a);
 }
 
 async function stripeCharge(a) {
@@ -52,31 +102,29 @@ async function stripeCharge(a) {
 }
 
 function ask(a) {
-  const req = a.spend
+  const req = (a.spend && a.waitFor === 'spend')
     ? { agent: a.name, kind: 'spend', text: `${a.name} wants to spend ${a.spend.usd} dollars on ${a.spend.item}. Nod to approve.` }
-    : { agent: a.name, kind: 'merge', text: `${a.name} wants to merge a pull request touching ${a.files.length} files. Blast radius ${a.blast} percent. ${a.blast > 75 ? 'Risky. ' : ''}Nod to merge, shake to stop.` };
+    : { agent: a.name, kind: 'merge', text: `${a.name} wants to merge a pull request touching ${a.files.length} files. Tests ${a.testsPassed ? 'pass' : 'fail'}. Blast radius ${a.blast} percent. ${a.blast > 60 || !a.testsPassed ? 'Risky. ' : ''}Nod to merge, shake to stop.` };
   a.status = 'waiting';
   state.queue.push(req); next(); push();
 }
 function next() { if (!state.pending && state.queue.length) { state.pending = state.queue.shift(); state.pending.at = Date.now(); } }
 
-async function runAgent(a) {
-  for (let p = 0; p <= 100; p += 20) { a.progress = p; push(); await sleep(700 + Math.random() * 900); }
-  ask(a);
-}
 
 async function decide(approve, source) {
   const req = state.pending; if (!req) return;
   const a = state.agents.find(x => x.name === req.agent);
-  state.pending = null;
-  if (approve) {
-    if (req.kind === 'spend') {
-      const c = await stripeCharge(a); state.budget -= a.spend.usd;
-      state.ledger.unshift({ agent: a.name, usd: a.spend.usd, item: a.spend.item, stripe: c.id, status: c.status || c.error });
-    }
-    a.status = 'merged'; a.pr = `PR #${100 + state.agents.indexOf(a)}`;
+  state.pending = null; a.decidedBy = source;
+  if (req.kind === 'spend') {
+    if (approve) { const c = await stripeCharge(a); state.budget -= a.spend.usd;
+      state.ledger.unshift({ agent: a.name, usd: a.spend.usd, item: a.spend.item, stripe: c.id, status: c.status || c.error }); a.resume?.(); }
+    else { a.status = 'stopped'; a.resume?.(); }
+  } else if (approve) {
+    const out = sh(TARGET, 'git', 'merge', '--no-edit', '-q', '-m', `Merge ${a.name}`, a.branch);
+    a.status = /EXIT_FAIL|CONFLICT/.test(out) ? 'conflict' : 'merged'; if (a.status === 'conflict') sh(TARGET, 'git', 'merge', '--abort');
+    a.pr = a.branch;
   } else a.status = 'stopped';
-  a.decidedBy = source; next(); push();
+  next(); push();
 }
 
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
@@ -89,12 +137,15 @@ http.createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
     clients.add(res); res.write('data: ' + JSON.stringify(state) + '\n\n'); req.on('close', () => clients.delete(res)); return;
   }
+  if (u.pathname === '/state') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ pending: !!state.pending, kind: state.pending?.kind, risky: state.pending && state.agents.find(a => a.name === state.pending.agent)?.blast > 60, working: state.agents.some(a => a.status === 'working'), last: state.agents.map(a => a.status) })); }
   if (u.pathname === '/task' && req.method === 'POST') {
     const { text } = await body(req); if (!text) return res.end('{}');
     Object.assign(state, { task: text, agents: [], pending: null, queue: [], ledger: [], budget: 50 });
     push();
-    const agents = (await plan(text)).map(a => ({ ...a, status: 'working', progress: 0 }));
-    state.agents = agents; push(); agents.forEach(runAgent);
+    fs.rmSync(TARGET, { recursive: true, force: true }); fs.rmSync(WT, { recursive: true, force: true }); fs.cpSync(TEMPLATE, TARGET, { recursive: true });
+    sh(TARGET, 'git', 'init', '-q', '-b', 'main'); sh(TARGET, 'git', 'add', '-A'); sh(TARGET, 'git', '-c', 'user.email=s@s', '-c', 'user.name=sotto', 'commit', '-qm', 'base');
+    const agents = (await plan(text)).map(a => ({ ...a, status: 'working', progress: 5, blast: 0, files: [] }));
+    state.agents = agents; push(); agents.forEach(work);
     return res.end(JSON.stringify({ ok: true }));
   }
   if (u.pathname === '/gesture' && req.method === 'POST') {
