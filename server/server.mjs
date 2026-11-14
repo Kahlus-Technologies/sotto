@@ -14,7 +14,8 @@ const PORT = +env.PORT || 8787;
 const GEMINI = env.GEMINI_MODEL || 'gemini-4-hydrogen';
 const THINK = env.GEMINI_THINKING || 'low';
 const clients = new Set();
-const state = { task: '', agents: [], pending: null, queue: [], ledger: [], budget: 50 };
+const pose = { pitch: 0, yaw: 0, roll: 0, x: 0, y: 0, z: 0 };
+const state = { focus: 0, diffOpen: false, zoom: 1, task: '', agents: [], pending: null, queue: [], ledger: [], budget: 50 };
 
 const push = () => { const s = 'data: ' + JSON.stringify(state) + '\n\n'; for (const c of clients) c.write(s); };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -86,7 +87,7 @@ Return JSON {"summary": one sentence, "files": {"path": "full new file content",
   const t = sh(dir, 'node', '--test', ...fs.readdirSync(path.join(dir, 'test')).map(f => 'test/' + f)); a.testsPassed = !/EXIT_FAIL|# fail [1-9]|ℹ fail [1-9]/.test(t) && !/not ok/.test(t);
   Object.assign(a, { blast: 0, files: changed }); const b = blast(dir, changed, a.testsPassed);
   a.blast = b.score; a.reach = b.reach; a.files = changed.length ? changed : ['(no change)'];
-  a.diff = sh(dir, 'git', 'diff', '--stat', 'HEAD').split('\n').slice(0, 6).join('\n');
+  a.diff = sh(dir, 'git', 'diff', 'HEAD', '--', 'src', 'test').slice(0, 1800);
   a.progress = 100; push();
   if (changed.length) { sh(dir, 'git', 'add', '-A'); sh(dir, 'git', '-c', 'user.email=s@s', '-c', 'user.name=sotto', 'commit', '-qm', `${a.name}: ${a.goal}`); }
   a.status = 'waiting'; a.waitFor = 'merge'; ask(a);
@@ -149,16 +150,49 @@ http.createServer(async (req, res) => {
     state.agents = agents; push(); agents.forEach(work);
     return res.end(JSON.stringify({ ok: true }));
   }
+  if (u.pathname === '/pose' && req.method === 'POST') { Object.assign(pose, await body(req)); for (const c of clients) c.write('event: pose\ndata: ' + JSON.stringify(pose) + '\n\n'); return res.end('{}'); }
   if (u.pathname === '/gesture' && req.method === 'POST') {
     const { type, source } = await body(req);
+    const n = state.agents.length;
+    if (type === 'tilt_right' && n) { state.focus = (state.focus + 1) % n; push(); return res.end('{}'); }
+    if (type === 'tilt_left' && n) { state.focus = (state.focus + n - 1) % n; push(); return res.end('{}'); }
+    if (type === 'look_up') { state.diffOpen = !state.diffOpen; push(); return res.end('{}'); }
+    if (type === 'lean_in') { state.zoom = Math.min(1.6, state.zoom + 0.3); push(); return res.end('{}'); }
+    if (type === 'lean_back') { state.zoom = Math.max(0.8, state.zoom - 0.3); push(); return res.end('{}'); }
     await decide(['approve', 'nod', 'tap2'].includes(type), source || type); return res.end('{}');
   }
   if (u.pathname === '/tts') {
     const t = u.searchParams.get('text') || '';
+    const eleven = u.searchParams.get('engine') === 'eleven' || !env.MINIMAX_API_KEY;
+    if (!eleven) {
+      try {
+        const r = await fetch(`https://api.minimax.io/v1/t2a_v2?GroupId=${env.MINIMAX_GROUP_ID}`, { method: 'POST',
+          headers: { authorization: 'Bearer ' + env.MINIMAX_API_KEY, 'content-type': 'application/json' },
+          body: JSON.stringify({ model: 'speech-2.8-turbo', text: t, stream: false, voice_setting: { voice_id: 'English_expressive_narrator', speed: 1.08, vol: 1 }, audio_setting: { sample_rate: 32000, format: 'mp3' } }) });
+        const j = await r.json();
+        if (j.data?.audio) { res.writeHead(200, { 'content-type': 'audio/mpeg' }); return res.end(Buffer.from(j.data.audio, 'hex')); }
+      } catch (e) { console.log('minimax tts failed', e.message); }
+    }
     const r = await fetch('https://api.elevenlabs.io/v1/text-to-speech/JBFqnCBsd6RMkjVDRZzb', { method: 'POST',
       headers: { 'xi-api-key': env.ELEVENLABS_API_KEY, 'content-type': 'application/json' },
       body: JSON.stringify({ text: t, model_id: 'eleven_flash_v2_5', voice_settings: { stability: 0.4, similarity_boost: 0.6, style: 0 } }) });
     res.writeHead(r.status, { 'content-type': 'audio/mpeg' }); return res.end(Buffer.from(await r.arrayBuffer()));
+  }
+  // Silent words from the Subvox decoder: MiniMax turns a few decoded words into one clear task sentence.
+  if (u.pathname === '/silent' && req.method === 'POST') {
+    const { words } = await body(req);
+    const raw = (words || []).join(' ');
+    let text = raw;
+    try {
+      const r = await fetch(`${env.MINIMAX_BASE_URL || 'https://api.minimax.io/v1'}/text/chatcompletion_v2`, { method: 'POST',
+        headers: { authorization: 'Bearer ' + env.MINIMAX_API_KEY, 'content-type': 'application/json' },
+        body: JSON.stringify({ model: env.MINIMAX_MODEL || 'MiniMax-M3.1-Flash', max_tokens: 60, messages: [{ role: 'user', content:
+          `A silent-speech decoder produced these words from head motion: "${raw}". Write the one short coding task the user most likely meant, imperative, under 12 words. Output only the task.` }] }) });
+      text = (await r.json()).choices?.[0]?.message?.content?.trim() || raw;
+    } catch {}
+    state.heard = { raw, text }; push();
+    if (text) { Object.assign(state, { task: text }); fetch(`http://127.0.0.1:${PORT}/task`, { method: 'POST', body: JSON.stringify({ text }) }); }
+    return res.end(JSON.stringify({ text }));
   }
   const f = path.join(here, '../web', u.pathname === '/' ? 'index.html' : u.pathname);
   if (f.startsWith(path.join(here, '../web')) && fs.existsSync(f)) { res.writeHead(200, { 'content-type': types[path.extname(f)] || 'text/plain' }); return fs.createReadStream(f).pipe(res); }

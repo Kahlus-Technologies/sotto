@@ -1,9 +1,9 @@
 <!doctype html><meta charset=utf-8><title>Sotto</title>
 <style>
 :root{--bg:#000;--fg:#e8fff1;--dim:#5b7a68;--ok:#35f08a;--warn:#ffcf3a;--bad:#ff4d5e}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:20px ui-monospace,Menlo,monospace;height:100vh;display:grid;grid-template-columns:2fr 1fr;gap:24px;padding:28px}
+*{box-sizing:border-box}body{margin:0;overflow:hidden;perspective:1400px;background:var(--bg);color:var(--fg);font:20px ui-monospace,Menlo,monospace;height:100vh;display:grid;grid-template-columns:2fr 1fr;gap:24px;padding:28px}
 h1{margin:0 0 4px;font-size:22px;letter-spacing:.2em;color:var(--ok)}.task{color:var(--dim);margin-bottom:18px;min-height:1.3em}
-.agent{border:1px solid #1d3a2b;border-radius:10px;padding:14px 18px;margin-bottom:14px}
+.agent.focus{outline:3px solid var(--ok);transform:translateZ(60px)}.diff{white-space:pre;font-size:13px;color:#9fe3b9;max-height:230px;overflow:hidden;margin-top:8px}.agent{transition:transform .2s;border:1px solid #1d3a2b;border-radius:10px;padding:14px 18px;margin-bottom:14px}
 .agent.waiting{border-color:var(--warn)}.agent.merged{border-color:var(--ok)}.agent.stopped{border-color:var(--bad);opacity:.6}
 .row{display:flex;justify-content:space-between}.name{font-weight:700}.bar{height:8px;background:#0e1f17;border-radius:4px;margin:10px 0;overflow:hidden}
 .bar i{display:block;height:100%;background:var(--ok);transition:width .5s}.blast i{background:linear-gradient(90deg,var(--ok),var(--warn),var(--bad))}
@@ -14,12 +14,12 @@ h1{margin:0 0 4px;font-size:22px;letter-spacing:.2em;color:var(--ok)}.task{color
 input{width:100%;background:#06120b;border:1px solid #1d3a2b;color:var(--fg);padding:12px;font:inherit;border-radius:8px}
 button{background:#06120b;color:var(--fg);border:1px solid #1d3a2b;padding:8px 14px;font:inherit;border-radius:8px;cursor:pointer;margin:6px 6px 0 0}
 </style>
-<div><h1>SOTTO</h1><div class=task id=task>Hold SPACE and whisper a task. Or type it.</div><div id=agents></div></div>
+<div id=wall style="transform-style:preserve-3d;transition:transform .12s linear"><h1>SOTTO</h1><div class=small id=heard></div><div class=task id=task>Hold SPACE and whisper a task. Or type it.</div><div id=agents></div></div>
 <div><div id=ask></div><div class=small>BUDGET</div><div id=budget style="font-size:40px;color:var(--ok)">$50</div>
 <div class=small style="margin:14px 0 4px">STRIPE TEST LEDGER</div><div id=ledger class=small></div>
 <div style="margin-top:20px"><input id=in placeholder="type a task, press enter"><button onclick="g('approve')">nod</button><button onclick="g('reject')">shake</button><button id=mute></button></div></div>
 <script>
-const $=id=>document.getElementById(id);let voice=location.search.includes('voice=page');,last='';
+const $=id=>document.getElementById(id);let voice=location.search.includes('voice=page'),last='';
 const g=t=>fetch('/gesture',{method:'POST',body:JSON.stringify({type:t,source:'screen'})});
 $('mute').textContent='voice: '+(voice?'on':'off');$('mute').onclick=()=>{voice=!voice;$('mute').textContent='voice: '+(voice?'on':'off')};
 $('in').onkeydown=e=>{if(e.key==='Enter'&&e.target.value){task(e.target.value);e.target.value=''}};
@@ -30,12 +30,13 @@ if(SR){addEventListener('keydown',e=>{if(e.code==='Space'&&document.activeElemen
 addEventListener('keyup',e=>{if(e.code==='Space'&&rec)rec.stop()})}
 const es=new EventSource('/events');
 es.onmessage=e=>{const s=JSON.parse(e.data);if(s.task)$('task').textContent='▸ '+s.task;
-$('budget').textContent='$'+s.budget;
-$('agents').innerHTML=s.agents.map(a=>`<div class="agent ${a.status}"><div class=row><span class=name>${a.name}</span><span class=small>${a.status}${a.pr?' · '+a.pr:''}${a.decidedBy?' · via '+a.decidedBy:''}</span></div>
+$('heard')&&(s.heard?($('heard').textContent='silent: '+s.heard.raw+'  →  '+s.heard.text):0);$('budget').textContent='$'+s.budget;
+$('agents').innerHTML=s.agents.map((a,i)=>`<div class="agent ${a.status} ${i===s.focus?'focus':''}"><div class=row><span class=name>${a.name}</span><span class=small>${a.status}${a.pr?' · '+a.pr:''}${a.decidedBy?' · via '+a.decidedBy:''}</span></div>
 <div class=small>${a.goal}</div><div class=bar><i style="width:${a.progress}%"></i></div>
-<div class=small>blast radius ${a.blast}% · ${a.files.join(', ')}</div><div class="bar blast"><i style="width:${a.blast}%"></i></div></div>`).join('');
+<div class=small>blast radius ${a.blast}% · ${a.files.join(', ')}</div><div class="bar blast"><i style="width:${a.blast}%"></i></div>${s.diffOpen&&i===s.focus&&a.diff?'<div class=diff>'+a.diff.replace(/</g,'&lt;')+'</div>':''}</div>`).join('');
 $('ask').innerHTML=s.pending?`<div class=ask>${s.pending.text}<b>NOD / DOUBLE-TAP = YES · SHAKE / FLICK = NO</b></div>`:'';
 $('ledger').innerHTML=s.ledger.map(l=>`<div>$${l.usd} ${l.item}<br>${l.stripe} ${l.status||''}</div>`).join('');
 if(s.pending&&s.pending.text!==last&&voice){last=s.pending.text;new Audio('/tts?text='+encodeURIComponent(s.pending.text)).play().catch(()=>{})}
-if(!s.pending)last=''};
+if(!s.pending)last='';$('wall').style.scale=s.zoom};
+es.addEventListener('pose',e=>{const p=JSON.parse(e.data),d=57.3;$('wall').style.transform=`rotateY(${(-p.yaw*d*0.5).toFixed(1)}deg) rotateX(${(p.pitch*d*0.5).toFixed(1)}deg) rotateZ(${(-p.roll*d*0.3).toFixed(1)}deg) translate3d(${(-p.x*200).toFixed(0)}px,${(p.y*200).toFixed(0)}px,0)`});
 </script>

@@ -20,6 +20,7 @@ The band light mirrors the swarm: blue working, amber blinking when it needs you
 - **Gemini 4**: plans the swarm and writes every patch (`server/server.mjs`).
 - **Stripe, Best Economic Agent**: agents that must buy a paid API ask for budget. Approval creates a real Stripe test-mode PaymentIntent and shows it in the ledger.
 - **Deepgram + Pipecat** (`voice/voice.py`): the whole voice loop is a Pipecat pipeline. Mic, Silero VAD, Deepgram Nova-3 streaming STT, an intent router ("Sotto, fix the login bug", then "yes" or "stop"), and ElevenLabs TTS reading each request back.
+- **MiniMax**: M3.1 turns silent words decoded by the Subvox app into a task; MiniMax speech reads requests aloud. ElevenLabs is the fallback voice.
 - **ElevenLabs**: spoken approval requests (streamed through Pipecat).
 - **Hardware**: AirPods Pro head motion, Vexo band (BLE contract from `vexo-open-kit`), XREAL display.
 
