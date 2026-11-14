@@ -10,3 +10,5 @@ node_modules/
 .env
 vexo-open-kit/
 motion/airpods
+.venv/
+__pycache__/

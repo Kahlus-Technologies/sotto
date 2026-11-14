@@ -138,6 +138,7 @@ http.createServer(async (req, res) => {
     clients.add(res); res.write('data: ' + JSON.stringify(state) + '\n\n'); req.on('close', () => clients.delete(res)); return;
   }
   if (u.pathname === '/state') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ pending: !!state.pending, kind: state.pending?.kind, risky: state.pending && state.agents.find(a => a.name === state.pending.agent)?.blast > 60, working: state.agents.some(a => a.status === 'working'), last: state.agents.map(a => a.status) })); }
+  if (u.pathname === '/speak') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ text: state.pending?.text || '' })); }
   if (u.pathname === '/task' && req.method === 'POST') {
     const { text } = await body(req); if (!text) return res.end('{}');
     Object.assign(state, { task: text, agents: [], pending: null, queue: [], ledger: [], budget: 50 });

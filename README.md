@@ -19,7 +19,8 @@ The band light mirrors the swarm: blue working, amber blinking when it needs you
 ## Tracks
 - **Gemini 4**: plans the swarm and writes every patch (`server/server.mjs`).
 - **Stripe, Best Economic Agent**: agents that must buy a paid API ask for budget. Approval creates a real Stripe test-mode PaymentIntent and shows it in the ledger.
-- **ElevenLabs**: spoken approval requests.
+- **Deepgram + Pipecat** (`voice/voice.py`): the whole voice loop is a Pipecat pipeline. Mic, Silero VAD, Deepgram Nova-3 streaming STT, an intent router ("Sotto, fix the login bug", then "yes" or "stop"), and ElevenLabs TTS reading each request back.
+- **ElevenLabs**: spoken approval requests (streamed through Pipecat).
 - **Hardware**: AirPods Pro head motion, Vexo band (BLE contract from `vexo-open-kit`), XREAL display.
 
 ## Run it
@@ -27,6 +28,8 @@ The band light mirrors the swarm: blue working, amber blinking when it needs you
 node server/server.mjs                 # http://127.0.0.1:8787  (put the page on the glasses)
 python3 bridge/band.py 4               # your own band number only; double-tap the band first
 open motion/Sotto.app                  # AirPods nod/shake
+python3 -m venv .venv && .venv/bin/pip install 'pipecat-ai[deepgram,elevenlabs,silero,local]'
+.venv/bin/python voice/voice.py        # say: "Sotto, fix the login bug"
 ```
 Keys are read from `~/.vexohacks.env`: `GEMINI_API_KEY`, `STRIPE_SECRET_KEY` (test mode only), `ELEVENLABS_API_KEY`.
 Hold SPACE on the page and speak a task, or type one. The demo target repo is `demo-target/`; each run copies it to `/tmp`.

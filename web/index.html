@@ -17,11 +17,11 @@ button{background:#06120b;color:var(--fg);border:1px solid #1d3a2b;padding:8px 1
 <div><h1>SOTTO</h1><div class=task id=task>Hold SPACE and whisper a task. Or type it.</div><div id=agents></div></div>
 <div><div id=ask></div><div class=small>BUDGET</div><div id=budget style="font-size:40px;color:var(--ok)">$50</div>
 <div class=small style="margin:14px 0 4px">STRIPE TEST LEDGER</div><div id=ledger class=small></div>
-<div style="margin-top:20px"><input id=in placeholder="type a task, press enter"><button onclick="g('approve')">nod</button><button onclick="g('reject')">shake</button><button id=mute>voice: on</button></div></div>
+<div style="margin-top:20px"><input id=in placeholder="type a task, press enter"><button onclick="g('approve')">nod</button><button onclick="g('reject')">shake</button><button id=mute></button></div></div>
 <script>
-const $=id=>document.getElementById(id);let voice=true,last='';
+const $=id=>document.getElementById(id);let voice=location.search.includes('voice=page');,last='';
 const g=t=>fetch('/gesture',{method:'POST',body:JSON.stringify({type:t,source:'screen'})});
-$('mute').onclick=()=>{voice=!voice;$('mute').textContent='voice: '+(voice?'on':'off')};
+$('mute').textContent='voice: '+(voice?'on':'off');$('mute').onclick=()=>{voice=!voice;$('mute').textContent='voice: '+(voice?'on':'off')};
 $('in').onkeydown=e=>{if(e.key==='Enter'&&e.target.value){task(e.target.value);e.target.value=''}};
 const task=text=>fetch('/task',{method:'POST',body:JSON.stringify({text})});
 // push-to-talk with browser speech recognition
