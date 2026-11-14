@@ -16,6 +16,17 @@ When an agent wants to spend money or merge, the glasses show it, ElevenLabs rea
 
 The band light mirrors the swarm: blue working, amber blinking when it needs you, red blinking when the pending merge is risky, green when done.
 
+## Which model does what (live in the UI, switchable)
+| Role | Default | Can switch to |
+|---|---|---|
+| Planner (splits the task) | Gemini 4 hydrogen | MiniMax M3.1 Flash, M3 |
+| Coder agents (write patches) | Gemini 4 hydrogen | MiniMax M3.1 Flash, M3 |
+| Silent words to task | MiniMax M3.1 Flash | Gemini, MiniMax M3 |
+| Voice out | MiniMax speech-2.8-turbo | ElevenLabs flash v2.5 (fallback) |
+| Voice in | Deepgram Nova-3 via Pipecat | |
+
+The right panel of the page shows the active model per role and a live call count and average latency per model. A failed MiniMax call falls back to Gemini and is counted as a fallback.
+
 ## Tracks
 - **Gemini 4**: plans the swarm and writes every patch (`server/server.mjs`).
 - **Stripe, Best Economic Agent**: agents that must buy a paid API ask for budget. Approval creates a real Stripe test-mode PaymentIntent and shows it in the ledger.

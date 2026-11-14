@@ -20,15 +20,46 @@ const state = { focus: 0, diffOpen: false, zoom: 1, task: '', agents: [], pendin
 const push = () => { const s = 'data: ' + JSON.stringify(state) + '\n\n'; for (const c of clients) c.write(s); };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function gemini(prompt) {
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI}:generateContent?key=${env.GEMINI_API_KEY}`, {
+// Model registry: every LLM/voice call is routed through here and counted, so the UI can show what runs where.
+const MODELS = {
+  'gemini-4-hydrogen': { vendor: 'Google DeepMind', kind: 'llm' },
+  'MiniMax-M3.1-Flash': { vendor: 'MiniMax', kind: 'llm' },
+  'MiniMax-M3': { vendor: 'MiniMax', kind: 'llm' },
+};
+state.models = { planner: GEMINI, coder: GEMINI, silent: env.MINIMAX_MODEL || 'MiniMax-M3.1-Flash',
+  voice: env.MINIMAX_API_KEY ? 'MiniMax speech-2.8-turbo' : 'ElevenLabs flash v2.5', stt: 'Deepgram Nova-3 (Pipecat)' };
+state.options = ['gemini-4-hydrogen', 'MiniMax-M3.1-Flash', 'MiniMax-M3'];
+state.calls = {}; state.last = {};
+const count = (model, role, ms, ok) => { const c = (state.calls[model] ||= { n: 0, ms: 0, fail: 0 }); c.n++; c.ms += ms; if (!ok) c.fail++; state.last[role] = { model, ms: Math.round(ms), ok }; push(); };
+
+async function minimax(prompt, model) {
+  const r = await fetch(`${env.MINIMAX_BASE_URL || 'https://api.minimax.io/v1'}/text/chatcompletion_v2`, { method: 'POST',
+    headers: { authorization: 'Bearer ' + env.MINIMAX_API_KEY, 'content-type': 'application/json' },
+    body: JSON.stringify({ model, max_tokens: 6000, messages: [{ role: 'user', content: prompt + '\nReturn only valid JSON, no markdown.' }] }),
+    signal: AbortSignal.timeout(60000) });
+  const txt = (await r.json()).choices?.[0]?.message?.content || '';
+  return JSON.parse(txt.replace(/^```(?:json)?|```$/g, '').trim());
+}
+async function geminiCall(prompt, model) {
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json', thinkingConfig: { thinkingLevel: THINK } } }),
     signal: AbortSignal.timeout(60000) });
   const j = await r.json();
   return JSON.parse(j.candidates[0].content.parts[0].text);
 }
-
+// role = planner | coder. Uses the model chosen in the UI; falls back to Gemini if the chosen one fails.
+async function gemini(prompt, role = 'coder') {
+  const model = state.models[role], t0 = Date.now();
+  try {
+    const out = model.startsWith('MiniMax') ? await minimax(prompt, model) : await geminiCall(prompt, model);
+    count(model, role, Date.now() - t0, true); return out;
+  } catch (e) {
+    count(model, role, Date.now() - t0, false);
+    if (model.startsWith('MiniMax')) { const t1 = Date.now(); const out = await geminiCall(prompt, GEMINI); count(GEMINI + ' (fallback)', role, Date.now() - t1, true); return out; }
+    throw e;
+  }
+}
 
 import { execFileSync } from 'node:child_process';
 const TEMPLATE = path.join(here, '../demo-target');
@@ -44,7 +75,7 @@ async function plan(task) {
     const out = await gemini(`You lead a swarm of 3 coding agents working on this small JS repo (ES modules). Task from the owner: "${task}".
 Repo files:\n${Object.entries(code).map(([f, c]) => `--- ${f}\n${c}`).join('\n')}
 Return a JSON array of exactly 3 agents: {name (one word), goal (one sentence), spend (null, or {item, usd (integer 1-9)} if the agent must buy a paid API/service before it can do its job)}.
-Agent 1 fixes the actual bug. Agent 2 does the part of the task that needs a paid service (spend not null). Agent 3 does an ambitious but risky refactor of shared code (e.g. rewrite crypto/db layer) that touches many files.`);
+Agent 1 fixes the actual bug. Agent 2 does the part of the task that needs a paid service (spend not null). Agent 3 does an ambitious but risky refactor of shared code (e.g. rewrite crypto/db layer) that touches many files.`, 'planner');
     if (Array.isArray(out) && out.length) return out.slice(0, 3);
   } catch (e) { console.log('plan failed, fallback:', e.message); }
   return [{ name: 'Fixer', goal: 'Fix the login bug', spend: null },
@@ -78,7 +109,7 @@ async function work(a, i) {
   try {
     const out = await gemini(`You are coding agent "${a.name}". Goal: ${a.goal}. ${a.spend ? 'You have bought: ' + a.spend.item + '. Write a minimal working stub integration (no real network calls).' : ''}
 Repo (ES modules, node --test):\n${Object.entries(code).map(([f, c]) => `--- ${f}\n${c}`).join('\n')}
-Return JSON {"summary": one sentence, "files": {"path": "full new file content", ...}} containing only files you change or add under src/ or test/. Keep existing exports working.`);
+Return JSON {"summary": one sentence, "files": {"path": "full new file content", ...}} containing only files you change or add under src/ or test/. Keep existing exports working.`, 'coder');
     edits = out.files || {}; a.summary = out.summary || '';
   } catch (e) { a.summary = 'agent failed: ' + e.message; }
   a.progress = 55; push();
@@ -140,6 +171,7 @@ http.createServer(async (req, res) => {
   }
   if (u.pathname === '/state') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ pending: !!state.pending, kind: state.pending?.kind, risky: state.pending && state.agents.find(a => a.name === state.pending.agent)?.blast > 60, working: state.agents.some(a => a.status === 'working'), last: state.agents.map(a => a.status) })); }
   if (u.pathname === '/speak') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ text: state.pending?.text || '' })); }
+  if (u.pathname === '/model' && req.method === 'POST') { const { role, model } = await body(req); if (['planner', 'coder', 'silent'].includes(role) && state.options.includes(model)) { state.models[role] = model; push(); } return res.end('{}'); }
   if (u.pathname === '/task' && req.method === 'POST') {
     const { text } = await body(req); if (!text) return res.end('{}');
     Object.assign(state, { task: text, agents: [], pending: null, queue: [], ledger: [], budget: 50 });
@@ -164,12 +196,14 @@ http.createServer(async (req, res) => {
   if (u.pathname === '/tts') {
     const t = u.searchParams.get('text') || '';
     const eleven = u.searchParams.get('engine') === 'eleven' || !env.MINIMAX_API_KEY;
+    const tt0 = Date.now();
     if (!eleven) {
       try {
         const r = await fetch(`https://api.minimax.io/v1/t2a_v2?GroupId=${env.MINIMAX_GROUP_ID}`, { method: 'POST',
           headers: { authorization: 'Bearer ' + env.MINIMAX_API_KEY, 'content-type': 'application/json' },
           body: JSON.stringify({ model: 'speech-2.8-turbo', text: t, stream: false, voice_setting: { voice_id: 'English_expressive_narrator', speed: 1.08, vol: 1 }, audio_setting: { sample_rate: 32000, format: 'mp3' } }) });
         const j = await r.json();
+        count('MiniMax speech-2.8-turbo', 'voice', Date.now() - tt0, !!j.data?.audio);
         if (j.data?.audio) { res.writeHead(200, { 'content-type': 'audio/mpeg' }); return res.end(Buffer.from(j.data.audio, 'hex')); }
       } catch (e) { console.log('minimax tts failed', e.message); }
     }
@@ -182,14 +216,15 @@ http.createServer(async (req, res) => {
   if (u.pathname === '/silent' && req.method === 'POST') {
     const { words } = await body(req);
     const raw = (words || []).join(' ');
-    let text = raw;
+    let text = raw; const ts0 = Date.now();
     try {
       const r = await fetch(`${env.MINIMAX_BASE_URL || 'https://api.minimax.io/v1'}/text/chatcompletion_v2`, { method: 'POST',
         headers: { authorization: 'Bearer ' + env.MINIMAX_API_KEY, 'content-type': 'application/json' },
-        body: JSON.stringify({ model: env.MINIMAX_MODEL || 'MiniMax-M3.1-Flash', max_tokens: 60, messages: [{ role: 'user', content:
+        body: JSON.stringify({ model: state.models.silent, max_tokens: 60, messages: [{ role: 'user', content:
           `A silent-speech decoder produced these words from head motion: "${raw}". Write the one short coding task the user most likely meant, imperative, under 12 words. Output only the task.` }] }) });
       text = (await r.json()).choices?.[0]?.message?.content?.trim() || raw;
-    } catch {}
+      count(state.models.silent, 'silent', Date.now() - ts0, true);
+    } catch { count(state.models.silent, 'silent', Date.now() - ts0, false); }
     state.heard = { raw, text }; push();
     if (text) { Object.assign(state, { task: text }); fetch(`http://127.0.0.1:${PORT}/task`, { method: 'POST', body: JSON.stringify({ text }) }); }
     return res.end(JSON.stringify({ text }));
